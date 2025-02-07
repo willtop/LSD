@@ -249,29 +249,10 @@ def main(args):
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name, subfolder="vae")
     
-    if os.path.exists(args.backbone_config):
-        train_backbone = True
-        backbone_config = UNetEncoder.load_config(args.backbone_config)
-        backbone = UNetEncoder.from_config(backbone_config)
-    elif args.backbone_config == "pretrain_dino":
-        train_backbone = False
-        dinov2 = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
-        class DINOBackbone(torch.nn.Module):
-            def __init__(self, dinov2):
-                super().__init__()
-                self.dinov2 = dinov2
-
-            def forward(self, x):
-                enc_out = self.dinov2.forward_features(x)
-                return rearrange(
-                    enc_out["x_norm_patchtokens"], 
-                    "b (h w ) c -> b c h w",
-                    h=int(np.sqrt(enc_out["x_norm_patchtokens"].shape[-2]))
-                )
-        backbone = DINOBackbone(dinov2)
-    else:
-        raise ValueError(
-            f"Unknown unet config {args.unet_config}")
+    assert os.path.exists(args.backbone_config)
+    train_backbone = True
+    backbone_config = UNetEncoder.load_config(args.backbone_config)
+    backbone = UNetEncoder.from_config(backbone_config)
 
     slot_attn_config = MultiHeadSTEVESA.load_config(args.slot_attn_config)
     slot_attn = MultiHeadSTEVESA.from_config(slot_attn_config)
@@ -391,10 +372,6 @@ def main(args):
             f"Slot Attn loaded as datatype {accelerator.unwrap_model(slot_attn).dtype}. {low_precision_error_string}"
         )
 
-    # Enable TF32 for faster training on Ampere GPUs,
-    # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
-    if args.allow_tf32:
-        torch.backends.cuda.matmul.allow_tf32 = True
 
     if args.scale_lr:
         args.learning_rate = (
@@ -402,18 +379,7 @@ def main(args):
             args.train_batch_size * accelerator.num_processes
         )
 
-    # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-            )
-
-        optimizer_class = bnb.optim.AdamW8bit
-    else:
-        optimizer_class = torch.optim.AdamW
+    optimizer_class = torch.optim.AdamW
 
 
     params_to_optimize = list(slot_attn.parameters()) + \

@@ -1,9 +1,10 @@
 {
   "_class_name": "UNetEncoder",
-  "_diffusers_version": "0.21.4",
+  "_diffusers_version": "0.32.2",
   "act_fn": "silu",
   "add_attention": true,
   "attention_head_dim": 8,
+  "attn_norm_num_groups": null,
   "block_out_channels": [
     128,
     128,
@@ -31,9 +32,11 @@
   "norm_eps": 1e-05,
   "norm_num_groups": 16,
   "num_class_embeds": null,
+  "num_train_timesteps": null,
   "out_channels": 192,
   "resnet_time_scale_shift": "default",
   "sample_size": 64,
+  "time_embedding_dim": null,
   "time_embedding_type": "positional",
   "up_block_types": [
     "UpBlock2D",
