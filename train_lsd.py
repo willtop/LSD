@@ -40,7 +40,7 @@ from einops import rearrange, reduce, repeat
 from src.models.backbone import UNetEncoder
 from src.models.slot_attn import MultiHeadSTEVESA
 from src.models.unet_with_pos import UNet2DConditionModelWithPos
-from src.data.dataset import GlobDataset
+from src.data.dataset import GlobDataset, CelebADataset
 
 from src.parser import parse_args
 
@@ -130,20 +130,16 @@ def log_validation(
     image_count = 0
 
     for batch_idx, batch in enumerate(val_dataloader):
-
-        pixel_values = batch["pixel_values"].to(
-            device=accelerator.device, dtype=weight_dtype)
+        if args.dataset_name == "celeba":
+            imgs_batch = batch.to(device=accelerator.device, dtype=weight_dtype)
+        else:
+            imgs_batch = batch["pixel_values"].to(device=accelerator.device, dtype=weight_dtype)
 
         with torch.autocast("cuda"):
-            model_input = vae.encode(pixel_values).latent_dist.sample()
+            model_input = vae.encode(imgs_batch).latent_dist.sample()
             pixel_values_recon = vae.decode(model_input).sample
 
-            if args.backbone_config == "pretrain_dino":
-                pixel_values_vit = batch["pixel_values_vit"].to(device=accelerator.device, 
-                                                                dtype=weight_dtype)
-                feat = backbone(pixel_values_vit)
-            else:
-                feat = backbone(pixel_values)
+            feat = backbone(imgs_batch)
             slots, attn = slot_attn(feat[:, None])  # for the time dimension
             slots = slots[:, 0]
             images_gen = pipeline(
@@ -156,7 +152,7 @@ def log_validation(
                 output_type="pt",
             ).images
 
-        grid_image = colorizer.get_heatmap(img=(pixel_values * 0.5 + 0.5),
+        grid_image = colorizer.get_heatmap(img=(imgs_batch * 0.5 + 0.5),
                                            attn=reduce(
                                                attn[:, 0], 'b num_h (h w) s -> b s h w', h=int(np.sqrt(attn.shape[-2])), 
                                                reduction='mean'
@@ -167,7 +163,7 @@ def log_validation(
         images.append(im)
         img_path = os.path.join(image_log_dir, f"image_{batch_idx:02}.jpg")
         im.save(img_path, optimize=True, quality=95)
-        image_count += pixel_values.shape[0]
+        image_count += imgs_batch.shape[0]
         if image_count >= args.num_validation_images:
             break
 
@@ -408,16 +404,22 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lr_lambda=[lambda _: 1, lambda _: 1] if train_unet else [lambda _: 1]
         )
-
-    train_dataset = GlobDataset(
-        root=args.dataset_root,
-        img_size=args.resolution,
-        img_glob=args.dataset_glob,
-        data_portion=(0.0, args.train_split_portion),
-        vit_norm=args.backbone_config == "pretrain_dino",
-        random_flip=args.flip_images,
-        vit_input_resolution=args.vit_input_resolution
-    )
+    if args.dataset_name == "celeba":
+        train_dataset = CelebADataset(
+            root=args.dataset_root,
+            img_size=args.resolution,
+            dataset_split="train"
+        )
+    else:
+        train_dataset = GlobDataset(
+            root=args.dataset_root,
+            img_size=args.resolution,
+            img_glob=args.dataset_glob,
+            data_portion=(0.0, args.train_split_portion),
+            vit_norm=args.backbone_config == "pretrain_dino",
+            random_flip=args.flip_images,
+            vit_input_resolution=args.vit_input_resolution
+        )
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -427,14 +429,21 @@ def main(args):
     )
 
     # validation set is only for visualization
-    val_dataset = GlobDataset(
-        root=args.dataset_root,
-        img_size=args.resolution,
-        img_glob=args.dataset_glob,
-        data_portion=(args.train_split_portion if args.train_split_portion < 1. else 0.9, 1.0),
-        vit_norm=args.backbone_config == "pretrain_dino",
-        vit_input_resolution=args.vit_input_resolution
-    )
+    if args.dataset_name == "celeba":
+        val_dataset = CelebADataset(
+            root=args.dataset_root,
+            img_size=args.resolution,
+            dataset_split="valid"
+        )
+    else:
+        val_dataset = GlobDataset(
+            root=args.dataset_root,
+            img_size=args.resolution,
+            img_glob=args.dataset_glob,
+            data_portion=(args.train_split_portion if args.train_split_portion < 1. else 0.9, 1.0),
+            vit_norm=args.backbone_config == "pretrain_dino",
+            vit_input_resolution=args.vit_input_resolution
+        )
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -553,10 +562,13 @@ def main(args):
             backbone.train()
         slot_attn.train()
         for step, batch in enumerate(train_dataloader):
-            pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+            if args.dataset_name == "celeba":
+                imgs_batch = batch.to(dtype=weight_dtype)
+            else:
+                imgs_batch = batch["pixel_values"].to(dtype=weight_dtype)
 
             # Convert images to latent space
-            model_input = vae.encode(pixel_values).latent_dist.sample()
+            model_input = vae.encode(imgs_batch).latent_dist.sample()
             model_input = model_input * vae.config.scaling_factor
 
             # Sample noise that we'll add to the model input
@@ -579,11 +591,7 @@ def main(args):
                 model_input, noise, timesteps)
 
             # timestep is not used, but should we?
-            if args.backbone_config == "pretrain_dino":
-                pixel_values_vit = batch["pixel_values_vit"].to(dtype=weight_dtype)
-                feat = backbone(pixel_values_vit)
-            else:
-                feat = backbone(pixel_values)
+            feat = backbone(imgs_batch)
             slots, attn = slot_attn(feat[:, None])  # for the time dimension
             slots = slots[:, 0]
 
@@ -606,30 +614,8 @@ def main(args):
                     f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
             # Compute instance loss
-            if args.snr_gamma is None:
-                loss = F.mse_loss(model_pred.float(),
-                                  target.float(), reduction="mean")
-            else:
-                # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-                # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-                # This is discussed in Section 4.2 of the same paper.
-                snr = compute_snr(noise_scheduler, timesteps)
-                base_weight = (
-                    torch.stack(
-                        [snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
-                )
-
-                if noise_scheduler.config.prediction_type == "v_prediction":
-                    # Velocity objective needs to be floored to an SNR weight of one.
-                    mse_loss_weights = base_weight + 1
-                else:
-                    # Epsilon and sample both use the same loss weights.
-                    mse_loss_weights = base_weight
-                loss = F.mse_loss(model_pred.float(),
-                                  target.float(), reduction="none")
-                loss = loss.mean(
-                    dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-                loss = loss.mean()
+            loss = F.mse_loss(model_pred.float(),
+                                target.float(), reduction="mean")
 
             loss = loss / args.gradient_accumulation_steps
 

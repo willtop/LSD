@@ -5,7 +5,35 @@ import torchvision
 import numpy as np
 from PIL import Image
 from torchvision import transforms
+import torchvision.transforms.functional as F
 from torch.utils.data import Dataset
+from torchvision.datasets.celeba import CelebA
+
+# the cropping did in original DiTi paper. 
+# Aggressive but focus on face and eliminates background noise
+class CropCelebA(object):
+    def __call__(self, img):
+        new_img = F.crop(img, 57, 25, 128, 128)
+        return new_img
+
+class CelebADataset(Dataset):
+    def __init__(self, root, img_size, dataset_split):
+        assert img_size == 128
+        super().__init__()
+        self.train_ds = CelebA(root, 
+                               split=dataset_split, 
+                               transform=transforms.Compose([
+                                   CropCelebA(),
+                                   transforms.ToTensor()
+                               ]),
+                               download=True)
+
+    def __len__(self):
+        return len(self.train_ds)
+    
+    def __getitem__(self, index):
+        img, _ = self.train_ds[index]
+        return img
 
 class GlobDataset(Dataset):
     def __init__(self, root, img_size, img_glob='*.png', 
@@ -86,4 +114,3 @@ if __name__ == "__main__":
         img_glob="**/*.png",
         data_portion=(0.0, 0.9)
     )
-    pass

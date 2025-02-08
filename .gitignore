@@ -22,3 +22,7 @@ eggs/
 .DS_Store
 
 __pycache__/
+
+# later added
+data_raw/
+runs/

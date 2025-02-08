@@ -20,7 +20,12 @@ def parse_args(input_args=None):
             " float32 precision."
         ),
     )
-
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default='movi-e',
+        help="the name of the dataset to train LSD on."
+    )
     parser.add_argument(
         "--output_dir",
         type=str,
