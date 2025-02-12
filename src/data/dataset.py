@@ -9,11 +9,11 @@ import torchvision.transforms.functional as F
 from torch.utils.data import Dataset
 from torchvision.datasets.celeba import CelebA
 
-# the cropping did in original DiTi paper. 
+# more strict than the cropping did in original DiTi paper. 
 # Aggressive but focus on face and eliminates background noise
 class CropCelebA(object):
     def __call__(self, img):
-        new_img = F.crop(img, 57, 25, 128, 128)
+        new_img = F.crop(img, 57, 35, 128, 100)
         return new_img
 
 class CelebADataset(Dataset):
@@ -24,6 +24,7 @@ class CelebADataset(Dataset):
                                split=dataset_split, 
                                transform=transforms.Compose([
                                    CropCelebA(),
+                                   transforms.Resize(size=(128,128)),
                                    transforms.ToTensor()
                                ]),
                                download=True)
